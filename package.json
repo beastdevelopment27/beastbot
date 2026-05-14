@@ -1,0 +1,16 @@
+{
+  "name": "beastbot",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "register-commands": "node scripts/register-commands.js",
+    "serve-transcripts": "node scripts/serve-transcripts.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.17.3",
+    "dotenv": "^16.4.7",
+    "pg": "^8.20.0"
+  }
+}
