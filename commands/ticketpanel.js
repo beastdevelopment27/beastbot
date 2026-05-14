@@ -2,9 +2,15 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   EmbedBuilder,
+  MessageFlags,
   ModalBuilder,
+  SectionBuilder,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
   SlashCommandBuilder,
+  TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -25,9 +31,11 @@ export const MODAL_REVIEW_SUBMIT_PREFIX = "ticket_review_submit";
 export const INPUT_REVIEW_RATING = "review_rating";
 export const INPUT_REVIEW_MESSAGE = "review_message";
 
-/** Legacy single “Create Ticket” id (still opens a general ticket). */
 export const BUTTON_CREATE = "ticket:create";
 export const BUTTON_HELP = "ticket:help";
+
+/** String select on support panel — values are `TICKET_CREATE_SUFFIX` keys. */
+export const SELECT_TICKET_CREATE = "ticket:create_select";
 
 /** Category buttons: `ticket:create:<suffix>` — max 100 chars total. */
 export const TICKET_CREATE_SUFFIX = {
@@ -54,19 +62,19 @@ export const TICKET_CATEGORY_META = {
   },
   [TICKET_CREATE_SUFFIX.ROLES]: {
     channelPrefix: "roles",
-    panelLabel: "Claim Customer Roles",
+    panelLabel: "Customer Role Claim",
   },
   [TICKET_CREATE_SUFFIX.GIVEAWAY]: {
     channelPrefix: "giveaway",
-    panelLabel: "Giveaway Winner",
+    panelLabel: "Giveaway Winner Claim",
   },
   [TICKET_CREATE_SUFFIX.PARTNERSHIP]: {
     channelPrefix: "partner",
-    panelLabel: "Partnership Inquiry",
+    panelLabel: "Partnership Inquiries",
   },
   [TICKET_CREATE_SUFFIX.GENERAL]: {
     channelPrefix: "ticket",
-    panelLabel: "Other / General Inquiry",
+    panelLabel: "General Support Ticket",
   },
 };
 
@@ -84,80 +92,154 @@ export function parseTicketCreateCustomId(customId) {
   const prefix = `${BUTTON_CREATE}:`;
   if (!customId.startsWith(prefix)) return null;
   const suffix = customId.slice(prefix.length);
+  return parseTicketCreateSelectValue(suffix);
+}
+
+/**
+ * @param {string} suffix One of `TICKET_CREATE_SUFFIX`
+ * @returns {TicketCategoryMeta & { suffix: string }} | null
+ */
+export function parseTicketCreateSelectValue(suffix) {
   const meta = TICKET_CATEGORY_META[suffix];
   if (!meta) return null;
   return { suffix, ...meta };
 }
+
 export const BUTTON_CLOSE = "ticket:close";
 
 export const data = new SlashCommandBuilder()
   .setName("ticket")
   .setDescription(
-    "Post the Beast Development support panel (embed + category buttons)."
+    "Post the Beast Development support panel (container layout + category buttons)."
   );
 
-/** Panel shown by /ticket — Support Center embed + six category buttons. */
-export function buildSupportPanelPayload() {
-  const embed = new EmbedBuilder()
-    .setColor(SUPPORT_COLOR)
-    .setTitle("Beast Development - Support Center")
-    .setDescription(
-      [
-        "Select the appropriate support category below to create a ticket.",
-        "",
-        "**Quick guidelines**",
-        "• One open ticket per member — updates stay in your ticket channel.",
-        "• Include script name, Tebex / purchase identifiers, and reproduction steps.",
-        "• Attach screenshots or `.fxap` / logs when reporting bugs.",
-        "",
-        "*Premium FiveM · Scripts · Maps · Tebex · storefront routing*",
-        "",
-        "— Beast Development · Premium FiveM Scripts & Tebex Support · Beast Test",
-        "",
-        "🛒 **Pre-Sale Questions**",
-        "If you have any purchase-related questions before buying, please contact us.",
-        "",
-        "📦 **Script / Map Support**",
-        "If you are facing issues with any purchased script or map, open a support ticket here.",
-        "",
-        "✅ **Claim Customer Roles**",
-        "Claim your customer roles after purchasing products from our Tebex store.",
-        "",
-        "🎉 **Giveaway Winner**",
-        "I won a giveaway and would like to claim my reward.",
-        "",
-        "🤝 **Partnership Inquiry**",
-        "Choose this option for partnerships, collaborations, or sponsorship inquiries.",
-        "",
-        "❓ **Other / General Inquiry**",
-        "For anything not listed above, create a general support ticket.",
-      ].join("\n")
+/**
+ * One category row: text block + button (Discord Components V2 “section” layout).
+ * @param {string} suffix
+ * @param {string} textBlock Markdown (e.g. **Title** + body).
+ * @param {string} buttonLabel
+ */
+function ticketCategorySection(suffix, textBlock, buttonLabel) {
+  return new SectionBuilder()
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(textBlock))
+    .setButtonAccessory((b) =>
+      b
+        .setCustomId(`${BUTTON_CREATE}:${suffix}`)
+        .setLabel(buttonLabel)
+        .setStyle(ButtonStyle.Secondary)
     );
+}
 
-  const secondary = ButtonStyle.Secondary;
+/**
+ * Public `https://` URL for the support panel logo (Components V2 section thumbnail).
+ * Set `SUPPORT_PANEL_LOGO_URL` or `BRAND_LOGO_URL` in discord.env.
+ * @returns {string}
+ */
+function supportPanelLogoUrl() {
+  const raw =
+    process.env.SUPPORT_PANEL_LOGO_URL?.trim() ||
+    process.env.BRAND_LOGO_URL?.trim() ||
+    "";
+  if (!raw || !/^https:\/\//i.test(raw)) return "";
+  try {
+    new URL(raw);
+    return raw;
+  } catch {
+    return "";
+  }
+}
 
-  const btn = (suffix, label, emoji) =>
-    new ButtonBuilder()
-      .setCustomId(`${BUTTON_CREATE}:${suffix}`)
-      .setLabel(label)
-      .setStyle(secondary)
-      .setEmoji(emoji);
+/**
+ * Support panel using **Components V2**: tinted container + sections (text + button).
+ * Optional logo: section thumbnail beside the title when `SUPPORT_PANEL_LOGO_URL` is set.
+ * Discord does not expose embed/container width; the client sets message width.
+ */
+export function buildSupportPanelPayload() {
+  const logoUrl = supportPanelLogoUrl();
 
-  const row1 = new ActionRowBuilder().addComponents(
-    btn(TICKET_CREATE_SUFFIX.PRESALE, "Pre-Sale Ticket", "🛒"),
-    btn(TICKET_CREATE_SUFFIX.PRODUCT, "Product Support", "📦"),
-    btn(TICKET_CREATE_SUFFIX.ROLES, "Customer Roles", "✅")
+  const titleBlock = [
+    "# Beast Development Support Center",
+    "",
+    "Select the appropriate support category below to create a ticket.",
+  ].join("\n");
+
+  const guidelinesBlock = [
+    "**Guidelines:**",
+    "• One issue per ticket",
+    "• Include order / receipt details when relevant",
+    "• Attach screenshots or logs when needed",
+    "",
+    "**Categories:**",
+  ].join("\n");
+
+  const divider = new SeparatorBuilder()
+    .setDivider(true)
+    .setSpacing(SeparatorSpacingSize.Large);
+
+  const footer = new TextDisplayBuilder().setContent(
+    "Beast Development • Premium FiveM Scripts & Support"
   );
 
-  const row2 = new ActionRowBuilder().addComponents(
-    btn(TICKET_CREATE_SUFFIX.GIVEAWAY, "Giveaway Ticket", "🎉"),
-    btn(TICKET_CREATE_SUFFIX.PARTNERSHIP, "Partnership Ticket", "🤝"),
-    btn(TICKET_CREATE_SUFFIX.GENERAL, "General Ticket", "❓")
-  );
+  const container = new ContainerBuilder().setAccentColor(SUPPORT_COLOR);
+
+  if (logoUrl) {
+    container.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(titleBlock)
+        )
+        .setThumbnailAccessory((thumb) =>
+          thumb.setURL(logoUrl).setDescription("Beast Development")
+        )
+    );
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(guidelinesBlock)
+    );
+  } else {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`${titleBlock}\n\n${guidelinesBlock}`)
+    );
+  }
+
+  container
+    .addSeparatorComponents(divider)
+    .addSectionComponents(
+      ticketCategorySection(
+        TICKET_CREATE_SUFFIX.PRESALE,
+        "**Pre-Sale Questions**\nQuestions before purchasing products.",
+        "Pre-Sale Ticket"
+      ),
+      ticketCategorySection(
+        TICKET_CREATE_SUFFIX.PRODUCT,
+        "**Script / Map Support**\nSupport for purchased resources.",
+        "Product Support"
+      ),
+      ticketCategorySection(
+        TICKET_CREATE_SUFFIX.ROLES,
+        "**Customer Role Claim**\nClaim your store / customer roles.",
+        "Customer Roles"
+      ),
+      ticketCategorySection(
+        TICKET_CREATE_SUFFIX.GIVEAWAY,
+        "**Giveaway Winner Claim**\nClaim giveaway rewards here.",
+        "Giveaway Ticket"
+      ),
+      ticketCategorySection(
+        TICKET_CREATE_SUFFIX.PARTNERSHIP,
+        "**Partnership Inquiries**\nCollaboration or sponsorship requests.",
+        "Partnership Ticket"
+      ),
+      ticketCategorySection(
+        TICKET_CREATE_SUFFIX.GENERAL,
+        "**General Support Ticket**\nOther questions or assistance.",
+        "General Ticket"
+      )
+    )
+    .addTextDisplayComponents(footer);
 
   return {
-    embeds: [embed],
-    components: [row1, row2],
+    flags: MessageFlags.IsComponentsV2,
+    components: [container],
     allowedMentions: { parse: [] },
   };
 }

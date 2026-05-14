@@ -19,7 +19,9 @@ import {
   INPUT_REVIEW_RATING,
   MODAL_REVIEW_SUBMIT_PREFIX,
   parseTicketCreateCustomId,
+  parseTicketCreateSelectValue,
   REVIEW_EMBED_COLOR,
+  SELECT_TICKET_CREATE,
   SUPPORT_COLOR,
 } from "../commands/ticketpanel.js";
 import {
@@ -304,6 +306,24 @@ export async function handleInteraction(client, interaction) {
       return;
     }
 
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === SELECT_TICKET_CREATE) {
+        const ticketMeta = parseTicketCreateSelectValue(
+          interaction.values[0] ?? ""
+        );
+        if (ticketMeta) {
+          await handleCreateTicket(client, interaction, ticketMeta);
+        } else {
+          await interaction.reply({
+            content: "That category is invalid. Run `/ticket` again for a fresh panel.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        return;
+      }
+      return;
+    }
+
     if (!interaction.isButton()) return;
 
     if (interaction.customId.startsWith(`${BUTTON_REVIEW_DM_PREFIX}:`)) {
@@ -450,63 +470,81 @@ async function handleUpdateModalSubmit(interaction) {
 
 /**
  * @param {import("discord.js").Client} client
- * @param {import("discord.js").ButtonInteraction} interaction
+ * @param {import("discord.js").ButtonInteraction | import("discord.js").StringSelectMenuInteraction | import("discord.js").ModalSubmitInteraction} interaction
  * @param {{ channelPrefix: string; panelLabel: string; suffix: string }} ticketMeta
+ * @returns {Promise<{ blocker: string | null; guild: import("discord.js").Guild | null; categoryId: string; staffRoleId?: string; logChannelId?: string }>}
  */
-async function handleCreateTicket(client, interaction, ticketMeta) {
+async function getTicketCreationBlockers(client, interaction, ticketMeta) {
   const { categoryId, staffRoleId, logChannelId } = requireIds();
 
   if (!interaction.inGuild()) {
-    await interaction.reply({
-      content: "Tickets can only be created in a server.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  if (!categoryId) {
-    await interaction.reply({
-      content: "Ticket system is not configured (missing CATEGORY_ID).",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
+    return {
+      blocker: "Tickets can only be created in a server.",
+      guild: null,
+      categoryId: "",
+    };
   }
 
   const guild = interaction.guild;
+
+  if (!categoryId) {
+    return {
+      blocker: "Ticket system is not configured (missing CATEGORY_ID).",
+      guild,
+      categoryId: "",
+    };
+  }
+
   const me = guild.members.me;
   if (
     !me?.permissions.has(PermissionFlagsBits.Administrator) &&
     !me?.permissions.has(PermissionFlagsBits.ManageChannels)
   ) {
-    await interaction.reply({
-      content:
+    return {
+      blocker:
         "I need **Manage Channels** (or **Administrator**) to create tickets.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
+      guild,
+      categoryId,
+      staffRoleId,
+      logChannelId,
+    };
   }
 
   const category = await guild.channels.fetch(categoryId).catch(() => null);
   if (!category || category.type !== ChannelType.GuildCategory) {
-    await interaction.reply({
-      content: "Invalid ticket category. Check CATEGORY_ID in your environment.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
+    return {
+      blocker: "Invalid ticket category. Check CATEGORY_ID in your environment.",
+      guild,
+      categoryId,
+      staffRoleId,
+      logChannelId,
+    };
   }
 
   await guild.channels.fetch().catch(() => null);
 
   const existing = findUserOpenTicket(guild, categoryId, interaction.user.id);
   if (existing) {
-    await interaction.reply({
-      content: `You already have an open ticket: #${existing.name}`,
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
+    return {
+      blocker: `You already have an open ticket: #${existing.name}`,
+      guild,
+      categoryId,
+      staffRoleId,
+      logChannelId,
+    };
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  return { blocker: null, guild, categoryId, staffRoleId, logChannelId };
+}
+
+/**
+ * @param {import("discord.js").Client} client
+ * @param {import("discord.js").ButtonInteraction | import("discord.js").StringSelectMenuInteraction | import("discord.js").ModalSubmitInteraction} interaction
+ * @param {{ channelPrefix: string; panelLabel: string; suffix: string }} ticketMeta
+ * @param {{ guild: import("discord.js").Guild; categoryId: string; staffRoleId?: string; logChannelId?: string }} ctx
+ */
+async function executeTicketChannelCreation(client, interaction, ticketMeta, ctx) {
+  const { guild, categoryId, staffRoleId, logChannelId } = ctx;
 
   const name = allocateCategoryUserChannelName(
     guild,
@@ -609,6 +647,28 @@ async function handleCreateTicket(client, interaction, ticketMeta) {
   await interaction.editReply({
     content: `Your ticket is ready: #${channel.name}`,
   });
+}
+
+/**
+ * @param {import("discord.js").Client} client
+ * @param {import("discord.js").ButtonInteraction | import("discord.js").StringSelectMenuInteraction | import("discord.js").ModalSubmitInteraction} interaction
+ * @param {{ channelPrefix: string; panelLabel: string; suffix: string }} ticketMeta
+ */
+async function handleCreateTicket(client, interaction, ticketMeta) {
+  const pre = await getTicketCreationBlockers(client, interaction, ticketMeta);
+  if (pre.blocker) {
+    await interaction.reply({
+      content: pre.blocker,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (!pre.guild) return;
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  await executeTicketChannelCreation(client, interaction, ticketMeta, pre);
 }
 
 /**
